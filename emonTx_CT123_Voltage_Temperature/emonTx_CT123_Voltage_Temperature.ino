@@ -48,7 +48,7 @@ DallasTemperature sensors(&oneWire);                                    // Pass 
 
 DeviceAddress TempSensor1;
 
-typedef struct { int realPower, powerFactor, Vrms, Temperature; } PayloadTX;         // neat way of packaging data for RF comms
+typedef struct { int realPower, powerFactor, Vrms, temperature; } PayloadTX;         // neat way of packaging data for RF comms
 PayloadTX emontx;
 
 const int LEDpin = 9;                                                   // On-board emonTx LED 
@@ -126,14 +126,14 @@ void loop()
   
   // Get temperature
   sensors.requestTemperatures();                                        // Send the command to get temperatures
-  emontx.Temperature = sensors.getTempC(TempSensor1) * 100;
-  Serial.print(emontx.Temperature);
+  emontx.temperature = sensors.getTempC(TempSensor1) * 100;
   Serial.print(" ");
+  Serial.print(emontx.temperature);
 
   Serial.println(); delay(100);
  
-  // Send RF data and flash LED (discard first 5 reading since they are sometimes erroneous)
-  if (start > 4)
+  // Send RF data and flash LED (discard first 10 reading since they are sometimes erroneous)
+  if (start > 9)
   {
     send_rf_data();                                                       // *SEND RF DATA* - see emontx_lib
     digitalWrite(LEDpin, HIGH); delay(2); digitalWrite(LEDpin, LOW);      // flash LED
