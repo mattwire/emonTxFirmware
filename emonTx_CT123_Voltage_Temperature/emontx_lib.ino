@@ -27,8 +27,8 @@ void printAddress()
   {
     // zero pad the address if necessary
     Serial.print("0x");
-    if (TempSensor1[i] < 16) Serial.print("0");
-    Serial.print(TempSensor1[i], HEX);
+    if (owtAddress[i] < 16) Serial.print("0");
+    Serial.print(owtAddress[i], HEX);
     if (i<7) Serial.print(", ");
     
   }
