@@ -12,12 +12,8 @@
 #include <EmonLib.h>
 #include <avr/eeprom.h>
 
-//#include <TimerOne.h>
 #define ADC_TIMER_PERIOD 125 // uS
 #define MAX_INTERVAL_BETWEEN_CONSECUTIVE_PEAKS 12 // mS
-
-//#define FILTERSHIFT 13 // for low pass filters to determine ADC offsets
-//#define FILTERROUNDING (1<<(FILTERSHIFT-1))
 
 // In this sketch, the ADC is free-running with a cycle time of ~104uS.
 
@@ -417,8 +413,6 @@ void allGeneralProcessing()
   static long sumV_squared; // for summation of V^2 values during datalog period
   static long filtV_div4;
   static long instV_squared;
-  //static long voltsOffset;
-  //static long fVoltsOffset=512L<<FILTERSHIFT;
   static long sumP_CT1;                         
   static long sumP_CT2;                              
   static long sumP_CT3;                           
@@ -435,10 +429,6 @@ void allGeneralProcessing()
   // remove DC offset from the raw voltage sample by subtracting the accurate value 
   // as determined by a LP filter.
   long sampleV_minusDC_long = ((long)sample_V<<8) - DCoffset_V_long;
-  //long sampleV_minusDC_long = sample_V-voltsOffset;
-  //fVoltsOffset += (sample_V-voltsOffset); 
-  //voltsOffset=(int)((fVoltsOffset+FILTERROUNDING)>>FILTERSHIFT);
-  //sumV_squared += sampleV_minusDC_long * sampleV_minusDC_long;
 
   // for AC failure detection 
   enum voltageZones voltageZoneNow; 
