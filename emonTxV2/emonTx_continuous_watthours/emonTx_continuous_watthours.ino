@@ -4,18 +4,20 @@
 //
 // Original Author: Robin Emley (calypso_rae on Open Energy Monitor Forum)
 // Addition of Wh totals by: Trystan Lea
+// Addition of Vrms by: Matthew Wire (using code from mk2pvrouter (Mk2_RFdatalog_4) by Robin Emley).
 
 
 #include <Arduino.h> // may not be needed, but it's probably a good idea to include this
 #include <JeeLib.h>     // RFu_JeeLib is available at from: http://github.com/openenergymonitor/RFu_jeelib
-
+#include <EmonLib.h>
 #include <avr/eeprom.h>
 
-#include <Arduino.h> // may not be needed, but it's probably a good idea to include this
-
-#include <TimerOne.h>
+//#include <TimerOne.h>
 #define ADC_TIMER_PERIOD 125 // uS
 #define MAX_INTERVAL_BETWEEN_CONSECUTIVE_PEAKS 12 // mS
+
+//#define FILTERSHIFT 13 // for low pass filters to determine ADC offsets
+//#define FILTERROUNDING (1<<(FILTERSHIFT-1))
 
 // In this sketch, the ADC is free-running with a cycle time of ~104uS.
 
@@ -27,10 +29,10 @@
 
 unsigned long sendinterval = 10000; // milliseconds
 
-#define freq RF12_433MHZ // Use the freq to match the module you have.
+#define freq RF12_868MHZ // Use the freq to match the module you have.
 
 const int nodeID = 10;  // emonTx RFM12B node ID
-const int networkGroup = 210;  // emonTx RFM12B wireless network group - needs to be same as emonBase and emonGLCD 
+const int networkGroup = 201;  // emonTx RFM12B wireless network group - needs to be same as emonBase and emonGLCD 
 const int UNO = 1;  // Set to 0 if you're not using the UNO bootloader (i.e using Duemilanove) 
                                                // - All Atmega's shipped from OpenEnergyMonitor come with Arduino Uno bootloader
  typedef struct { 
@@ -41,6 +43,7 @@ const int UNO = 1;  // Set to 0 if you're not using the UNO bootloader (i.e usin
    long wh_CT1;
    long wh_CT2;
    long wh_CT3;
+   int Vrms;
 } Tx_struct;    // revised data for RF comms
 Tx_struct tx_data;
 
@@ -130,9 +133,11 @@ int sample_CT3;
 // 18 Ohm burden resistors = calibration of 2000 / 18 = 111.1
 // 15 Ohm burden resistors = calibration of 2000 / 15 = 133.3
 
-const float powerCal_CT1 = (276.9*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
-const float powerCal_CT2 = (276.9*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
-const float powerCal_CT3 = (276.9*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
+const double VCAL = 234.26; // Voltage Calibration Constant
+
+const float powerCal_CT1 = (VCAL*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
+const float powerCal_CT2 = (VCAL*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
+const float powerCal_CT3 = (VCAL*(3.3/1023))*(133.3*(3.3/1023)); // <---- powerCal value
 
 //const float powerCal_CT1 = 0.0416;  // <---- powerCal value  
 //const float powerCal_CT2 = 0.0416;  // <---- powerCal value  
@@ -170,6 +175,7 @@ unsigned long lastsecond = millis();
 boolean laststate = true;
 unsigned long lastsendtime = 0;
 
+double V_RATIO;
 
 void setup()
 {  
@@ -186,6 +192,8 @@ void setup()
   pinMode(LEDpin, OUTPUT); 
   digitalWrite(LEDpin, LED_OFF); 
 
+  int SUPPLYVOLTAGE = readVcc();
+  V_RATIO = VCAL *((SUPPLYVOLTAGE/1000.0) / (ADC_COUNTS));
        
   // When using integer maths, calibration values that have supplied in floating point 
   // form need to be rescaled.  
@@ -406,6 +414,11 @@ void loop()
 //
 void allGeneralProcessing()
 {
+  static long sumV_squared; // for summation of V^2 values during datalog period
+  static long filtV_div4;
+  static long instV_squared;
+  //static long voltsOffset;
+  //static long fVoltsOffset=512L<<FILTERSHIFT;
   static long sumP_CT1;                         
   static long sumP_CT2;                              
   static long sumP_CT3;                           
@@ -422,13 +435,22 @@ void allGeneralProcessing()
   // remove DC offset from the raw voltage sample by subtracting the accurate value 
   // as determined by a LP filter.
   long sampleV_minusDC_long = ((long)sample_V<<8) - DCoffset_V_long;
+  //long sampleV_minusDC_long = sample_V-voltsOffset;
+  //fVoltsOffset += (sample_V-voltsOffset); 
+  //voltsOffset=(int)((fVoltsOffset+FILTERROUNDING)>>FILTERSHIFT);
+  //sumV_squared += sampleV_minusDC_long * sampleV_minusDC_long;
 
   // for AC failure detection 
   enum voltageZones voltageZoneNow; 
   boolean nextPeakDetected = false;
   unsigned long timeNow = millis();
   
-
+  // for Vrms calculation (for datalogging only)
+  filtV_div4 = sampleV_minusDC_long>>2;  // reduce to 16-bits (now x64, or 2^6)
+  instV_squared = filtV_div4 * filtV_div4; // 32-bits (now x4096, or 2^12)
+  instV_squared = instV_squared>>12;     // scaling is now x1 (V_ADC x I_ADC)
+  sumV_squared += instV_squared; // cumulative V^2 (V_ADC x I_ADC)
+  
   // determine polarity, to aid the logical flow
   enum polarities polarityNow;   
   if(sampleV_minusDC_long > 0) { 
@@ -454,6 +476,8 @@ void allGeneralProcessing()
             realPower_long = sumP_CT1 / samplesDuringThisWindow_CT1; 
             tx_data.realPower_CT1 = realPower_long * powerCal_CT1;
             
+            tx_data.Vrms = (int)(100 * (V_RATIO * sqrt(sumV_squared / samplesDuringThisWindow_CT1))); // Derive Vrms * 100 over last sample period
+            
             joules_CT1 += tx_data.realPower_CT1 * 2;  // Joules elapsed in 100 cycles @ 50Hz is power J.s x 2 seconds
             
             tx_data.wh_CT1 += joules_CT1 / 3600;
@@ -464,7 +488,10 @@ void allGeneralProcessing()
             Serial.print(" ");
             Serial.println();      
             sumP_CT1 = 0;
+            sumV_squared = 0;
             samplesDuringThisWindow_CT1 = 0;
+            Serial.print(tx_data.Vrms);
+            Serial.print(separatorString);
             Serial.print(tx_data.realPower_CT1);
             Serial.print(':');
             Serial.print(tx_data.wh_CT1);
@@ -651,6 +678,39 @@ int freeRam () {
   return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval); 
 }
 
+// Copied from EmonLib.cpp
+long readVcc() {
+  long result;
+  
+  //not used on emonTx V3 - as Vcc is always 3.3V - eliminates bandgap error and need for calibration http://harizanov.com/2013/09/thoughts-on-avr-adc-accuracy/
+
+  #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega328__) || defined (__AVR_ATmega328P__)
+  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);  
+  #elif defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_AT90USB1286__)
+  ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  ADCSRB &= ~_BV(MUX5);   // Without this the function always returns -1 on the ATmega2560 http://openenergymonitor.org/emon/node/2253#comment-11432
+  #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
+  ADMUX = _BV(MUX5) | _BV(MUX0);
+  #elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
+  ADMUX = _BV(MUX3) | _BV(MUX2);
+	
+  #endif
+
+
+  #if defined(__AVR__) 
+  delay(2);                                        // Wait for Vref to settle
+  ADCSRA |= _BV(ADSC);                             // Convert
+  while (bit_is_set(ADCSRA,ADSC));
+  result = ADCL;
+  result |= ADCH<<8;
+  result = READVCC_CALIBRATION_CONST / result;  //1100mV*1024 ADC steps http://openenergymonitor.org/emon/node/1186
+  return result;
+ #elif defined(__arm__)
+  return (3300);                                  //Arduino Due
+ #else 
+  return (3300);                                  //Guess that other un-supported architectures will be running a 3.3V!
+ #endif
+}
 
 
 
